@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-3101}:3000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./samples:/samples:ro
+    environment:
+      - PORT=3000
+      - DOCUMENTS_FILE=/samples/documents.json
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_PROXY=http://backend:3000
+    depends_on:
+      - backend
