@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router';
+import ReviewReminder from '../../components/ReviewReminder/ReviewReminder';
 import Reviews from '../../components/Reviews/Reviews';
 import lawyers from '../../data/lawyers.json';
 import { useDocument } from './hooks';
@@ -27,6 +28,11 @@ export default function Document({ currentLawyerId }: DocumentProps) {
               Uploaded by <span className="font-medium text-slate-700">{creator?.name ?? 'Unknown'}</span>
             </p>
           </header>
+          {document.reviewRequestedAt && (
+            <div className="mt-4">
+              <ReviewReminder requestedAt={document.reviewRequestedAt} />
+            </div>
+          )}
           <Reviews documentId={document.id} lawyerId={currentLawyerId} />
         </>
       )}

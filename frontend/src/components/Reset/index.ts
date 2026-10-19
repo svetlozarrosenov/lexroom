@@ -1,2 +1,2 @@
 export { default } from './Reset';
-export { useRemoveAllFindings, useRemoveAllPlans, useRemoveAllReviews } from './hooks';
+export { useRemoveAllFindings, useRemoveAllReviews } from './hooks';

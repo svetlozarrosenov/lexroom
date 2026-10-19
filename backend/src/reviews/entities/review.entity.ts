@@ -15,6 +15,13 @@ export const ONE_RUNNING_REVIEW_PER_DOCUMENT = 'uq_review_running_per_document';
   unique: true,
   where: `status = '${ReviewStatus.Running}'`,
 })
+/** Serves the plan's "completed reviews this month" count. */
+@Index('idx_review_status_created_at', ['status', 'createdAt'])
+/**
+ * Serves "reviews of one document, newest first". The unique index above cannot: it is
+ * partial and only holds running rows.
+ */
+@Index('idx_review_document_created_at', ['documentId', 'createdAt'])
 export class Review {
   @PrimaryGeneratedColumn('uuid')
   id: string;

@@ -19,6 +19,15 @@ type StubReview = {
   findings: unknown[];
 };
 
+/** Mimics ReviewsService.findLatestPerDocument over reviews given newest first. */
+function latestPerDocument(reviews: StubReview[], documentId?: string) {
+  const seen = new Set<string>();
+  return reviews
+    .filter((r) => !documentId || r.documentId === documentId)
+    .filter((r) => !seen.has(r.documentId) && seen.add(r.documentId))
+    .map(({ findings, ...r }) => ({ ...r, findingsCount: findings.length }));
+}
+
 async function setup(reviews: StubReview[] = []) {
   const moduleRef = await Test.createTestingModule({
     imports: [
@@ -28,7 +37,10 @@ async function setup(reviews: StubReview[] = []) {
     providers: [
       DocumentsService,
       { provide: DOCUMENTS_SOURCE_FILE, useValue: '../samples/documents.json' },
-      { provide: ReviewsService, useValue: { findAll: async () => reviews } },
+      {
+        provide: ReviewsService,
+        useValue: { findLatestPerDocument: async (documentId?: string) => latestPerDocument(reviews, documentId) },
+      },
     ],
   }).compile();
   return {
@@ -80,5 +92,16 @@ describe('DocumentsService', () => {
       findingsCount: 1,
     });
     expect(documents.find((d) => d.id === LEASE_V1)?.latestReview).toBeNull();
+  });
+
+  it('returns one document with its latest review, or null for an unknown id', async () => {
+    const { service } = await setup([
+      { id: 'r1', documentId: NDA, lawyerId: 'l', status: ReviewStatus.Failed, createdAt: new Date(), findings: [] },
+    ]);
+    await service.seed();
+
+    expect((await service.findOne(NDA))?.latestReview).toMatchObject({ id: 'r1', status: 'failed', findingsCount: 0 });
+    expect((await service.findOne(LEASE_V1))?.latestReview).toBeNull();
+    expect(await service.findOne('nope')).toBeNull();
   });
 });

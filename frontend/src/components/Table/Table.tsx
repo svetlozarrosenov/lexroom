@@ -6,6 +6,8 @@ export default function Table<T>({
   rowKey,
   emptyMessage = 'Nothing to show',
   onRowClick,
+  rowClassName,
+  rowTitle,
 }: TableProps<T>) {
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -31,7 +33,8 @@ export default function Table<T>({
               <tr
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={`hover:bg-slate-50 ${onRowClick ? 'cursor-pointer' : ''}`}
+                title={rowTitle?.(row)}
+                className={`${rowClassName?.(row) ?? 'hover:bg-slate-50'} ${onRowClick ? 'cursor-pointer' : ''}`}
               >
                 {columns.map((column) => (
                   <td key={column.key} className={`px-4 py-3 align-top ${column.className ?? ''}`}>

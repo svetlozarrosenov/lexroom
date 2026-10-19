@@ -5,7 +5,8 @@ import { ApiError } from '../../lib/fetcher';
 const URLs = {
   removeAllFindings: '/api/findings',
   removeAllReviews: '/api/reviews',
-  removeAllPlans: '/api/plan',
+  /** Not deleted; refreshed, because the plan's usage is counted from the reviews. */
+  getPlan: '/api/plan',
 };
 
 async function del(url: string): Promise<void> {
@@ -18,24 +19,16 @@ const keysUnder = (url: string) => (key: unknown) => typeof key === 'string' && 
 
 export function useRemoveAllFindings() {
   const { mutate } = useSWRConfig();
-  const { trigger, isMutating, error } = useSWRMutation(URLs.removeAllFindings, del, {
+  const { trigger, isMutating, error, reset } = useSWRMutation(URLs.removeAllFindings, del, {
     onSuccess: () => mutate(keysUnder(URLs.removeAllFindings)),
   });
-  return { removeAllFindings: trigger, isRemoving: isMutating, error };
+  return { removeAllFindings: trigger, isRemoving: isMutating, error, reset };
 }
 
 export function useRemoveAllReviews() {
   const { mutate } = useSWRConfig();
-  const { trigger, isMutating, error } = useSWRMutation(URLs.removeAllReviews, del, {
-    onSuccess: () => mutate(keysUnder(URLs.removeAllReviews)),
+  const { trigger, isMutating, error, reset } = useSWRMutation(URLs.removeAllReviews, del, {
+    onSuccess: () => Promise.all([mutate(keysUnder(URLs.removeAllReviews)), mutate(URLs.getPlan)]),
   });
-  return { removeAllReviews: trigger, isRemoving: isMutating, error };
-}
-
-export function useRemoveAllPlans() {
-  const { mutate } = useSWRConfig();
-  const { trigger, isMutating, error } = useSWRMutation(URLs.removeAllPlans, del, {
-    onSuccess: () => mutate(keysUnder(URLs.removeAllPlans)),
-  });
-  return { removeAllPlans: trigger, isRemoving: isMutating, error };
+  return { removeAllReviews: trigger, isRemoving: isMutating, error, reset };
 }

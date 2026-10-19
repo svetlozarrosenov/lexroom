@@ -13,4 +13,8 @@ export type TableProps<T> = {
   rowKey: (row: T) => string;
   emptyMessage?: string;
   onRowClick?: (row: T) => void;
+  /** Classes for a row that needs to stand out; replaces the default hover shade. */
+  rowClassName?: (row: T) => string | undefined;
+  /** Native tooltip for a row. */
+  rowTitle?: (row: T) => string | undefined;
 };

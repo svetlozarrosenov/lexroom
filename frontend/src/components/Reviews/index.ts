@@ -1,3 +1,3 @@
 export { default } from './Reviews';
-export { useReviews, useStartReview } from './hooks';
-export type { Review, ReviewFinding, ReviewStatus, ReviewsProps } from './types';
+export { useReviewEvents, useReviews, useStartReview } from './hooks';
+export type { Review, ReviewEvent, ReviewFinding, ReviewStatus, ReviewsProps } from './types';

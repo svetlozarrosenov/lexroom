@@ -1,21 +1,23 @@
 import { useNavigate } from 'react-router';
-import { useRemoveAllFindings, useRemoveAllPlans, useRemoveAllReviews } from './hooks';
+import ErrorBanner from '../ErrorBanner/ErrorBanner';
+import { useRemoveAllFindings, useRemoveAllReviews } from './hooks';
 
 export default function Reset() {
   const navigate = useNavigate();
   const findings = useRemoveAllFindings();
   const reviews = useRemoveAllReviews();
-  const plans = useRemoveAllPlans();
 
-  const isResetting = findings.isRemoving || reviews.isRemoving || plans.isRemoving;
-  const error = findings.error ?? reviews.error ?? plans.error;
+  const isResetting = findings.isRemoving || reviews.isRemoving;
+  const error = findings.error ?? reviews.error;
 
   async function handleReset() {
-    if (!window.confirm('Delete all reviews and reset the plan?')) return;
+    if (!window.confirm('Delete all reviews and their findings?')) return;
+    // A hook keeps its error until it runs again; clear both so a retry starts clean.
+    findings.reset();
+    reviews.reset();
     try {
       await findings.removeAllFindings();
       await reviews.removeAllReviews();
-      await plans.removeAllPlans();
       navigate('/');
     } catch {
       // the failing hook exposes its error, rendered below
@@ -24,7 +26,7 @@ export default function Reset() {
 
   return (
     <div className="flex items-center gap-3">
-      {error && <span className="text-xs text-red-600">Reset failed: {error.message}</span>}
+      {error && <ErrorBanner compact message={`Reset failed: ${error.message}`} />}
       <button
         type="button"
         onClick={handleReset}

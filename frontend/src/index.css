@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+/* A finding that has just arrived from the AI lights up, then settles into the list. */
+@keyframes finding-in {
+  from {
+    background-color: var(--color-indigo-100);
+    box-shadow: inset 4px 0 0 var(--color-indigo-500);
+  }
+  to {
+    background-color: transparent;
+    box-shadow: inset 4px 0 0 transparent;
+  }
+}

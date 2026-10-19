@@ -6,9 +6,9 @@ const CONSULTING = '077070a7-519b-411e-a466-3c97db7f07ff'; // 0 findings
 const FRANCHISE = '61a3bea4-f6cf-4854-92b6-671ae1349309'; // 18 findings
 const SAMPLES = '../samples/documents.json';
 
-/** random() is drawn as: fails?, fail-after roll, duration roll, then one weight per step. */
-function scripted(rolls: { fail?: boolean; failAfter?: number; duration?: number }) {
-  const head = [rolls.fail ? 0 : 0.99, rolls.failAfter ?? 0, rolls.duration ?? 0.5];
+/** random() is drawn as: fails?, fail-after roll, slow?, duration roll, then one weight per step. */
+function scripted(rolls: { fail?: boolean; failAfter?: number; slow?: boolean; duration?: number }) {
+  const head = [rolls.fail ? 0 : 0.99, rolls.failAfter ?? 0, rolls.slow ? 0 : 0.99, rolls.duration ?? 0.5];
   let i = 0;
   return () => (i < head.length ? head[i++] : 0.5);
 }
@@ -59,10 +59,49 @@ describe('FakeAiProvider', () => {
     }
   });
 
+  it('takes 60 to 120 seconds when slow, still returning the findings one by one', async () => {
+    for (const duration of [0, 0.5, 0.999]) {
+      const clock = instantClock();
+      const findings = await collect(
+        provider({ random: scripted({ slow: true, duration }), sleep: clock.sleep }).review(NDA),
+      );
+
+      expect(findings).toHaveLength(3);
+      expect(clock.delays).toHaveLength(4);
+      expect(clock.total()).toBeGreaterThanOrEqual(60_000);
+      expect(clock.total()).toBeLessThanOrEqual(120_000);
+      expect(clock.total()).toBeCloseTo(60_000 + duration * 60_000, 5);
+    }
+  });
+
+  it('can be slow and fail as well', async () => {
+    const clock = instantClock();
+    const ai = provider({ random: scripted({ fail: true, failAfter: 0.5, slow: true }), sleep: clock.sleep });
+
+    await expect(collect(ai.review(NDA))).rejects.toBeInstanceOf(FakeAiFailedError);
+    expect(clock.total()).toBeGreaterThanOrEqual(60_000 * (3 / 4)); // 3 of 4 steps, equal weights
+  });
+
+  it('is slow about 1 time in 10 over many reviews', async () => {
+    const clock = instantClock();
+    const ai = provider({ sleep: clock.sleep, failureRate: 0 });
+    const runs = 2_000;
+    let slow = 0;
+
+    for (let i = 0; i < runs; i++) {
+      clock.delays.length = 0;
+      await collect(ai.review(NDA));
+      if (clock.total() >= 60_000) slow++;
+    }
+
+    expect(slow / runs).toBeGreaterThan(0.07);
+    expect(slow / runs).toBeLessThan(0.13);
+  });
+
   it('uses random, not equal, intervals between findings', async () => {
     const clock = instantClock();
-    // Fixed outcome (no failure, mid duration), random weights for the steps.
-    const head = [0.99, 0, 0.5];
+    // Fixed outcome (no failure, not slow, mid duration), random weights for the steps.
+    const head = [0.99, 0, 0.99, 0.5];
     let i = 0;
     const random = () => (i < head.length ? head[i++] : Math.random());
     await collect(provider({ random, sleep: clock.sleep }).review(FRANCHISE));

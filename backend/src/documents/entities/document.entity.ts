@@ -26,4 +26,12 @@ export class Document {
   /** Id of the document this one replaces, if any (a newer version of the same contract). */
   @Column({ type: 'text', nullable: true })
   supersedes: string | null;
+
+  /**
+   * When a lawyer asked for a review while the monthly plan was used up. A reminder for
+   * next month, not a queued review: nothing starts by itself. Cleared when a review of
+   * this document completes.
+   */
+  @Column({ type: 'datetime', nullable: true })
+  reviewRequestedAt: Date | null;
 }

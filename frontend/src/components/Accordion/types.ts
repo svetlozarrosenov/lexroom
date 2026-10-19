@@ -5,6 +5,8 @@ export type AccordionItem = {
   summary: ReactNode;
   content: ReactNode;
   defaultOpen?: boolean;
+  /** Extra classes on the item, e.g. a coloured edge for its state. */
+  className?: string;
 };
 
 export type AccordionProps = {

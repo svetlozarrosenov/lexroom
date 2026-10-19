@@ -1,7 +1,9 @@
 import { useNavigate } from 'react-router';
+import ErrorBanner from '../../components/ErrorBanner/ErrorBanner';
+import { reviewReminderMessage } from '../../components/ReviewReminder/message';
 import ReviewStatusBadge from '../../components/ReviewStatusBadge/ReviewStatusBadge';
 import Table from '../../components/Table';
-import { useDocuments } from './hooks';
+import { useDocumentEvents, useDocuments } from './hooks';
 import type { DocumentColumn } from './types';
 
 const dateFormat = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium' });
@@ -52,6 +54,7 @@ const columns: DocumentColumn[] = [
 export default function Documents() {
   const navigate = useNavigate();
   const { documents, isLoading, error } = useDocuments();
+  useDocumentEvents();
 
   return (
     <section className="mx-auto max-w-5xl px-4 py-6">
@@ -59,7 +62,7 @@ export default function Documents() {
       {isLoading ? (
         <div className="h-40 animate-pulse rounded-lg bg-slate-100" aria-label="Loading documents" />
       ) : error ? (
-        <p className="text-sm text-red-600">Could not load documents: {error.message}</p>
+        <ErrorBanner title="Could not load documents" message={error.message} />
       ) : (
         <Table
           columns={columns}
@@ -67,6 +70,8 @@ export default function Documents() {
           rowKey={(doc) => doc.id}
           emptyMessage="No documents in this workspace"
           onRowClick={(doc) => navigate(`/documents/${doc.id}`)}
+          rowClassName={(doc) => (doc.reviewRequestedAt ? 'bg-orange-50 hover:bg-orange-100' : undefined)}
+          rowTitle={(doc) => (doc.reviewRequestedAt ? reviewReminderMessage(doc.reviewRequestedAt) : undefined)}
         />
       )}
     </section>

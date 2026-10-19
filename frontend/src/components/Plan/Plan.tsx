@@ -2,7 +2,7 @@ import { usePlan } from './hooks';
 
 export default function Plan() {
   const { plan, error, isLoading } = usePlan();
-
+  console.log('crb_plan', plan)
   if (isLoading) {
     return <div className="h-9 w-40 animate-pulse rounded bg-slate-100" aria-label="Loading plan" />;
   }
@@ -11,7 +11,7 @@ export default function Plan() {
     return <div className="text-sm text-red-600">Plan unavailable</div>;
   }
 
-  const used = plan.max - plan.remaining;
+  const { used } = plan;
   const exhausted = plan.remaining === 0;
 
   return (

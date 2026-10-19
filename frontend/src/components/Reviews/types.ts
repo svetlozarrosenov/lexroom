@@ -17,6 +17,10 @@ export type Review = {
   findings?: ReviewFinding[];
 };
 
+export type ReviewEvent =
+  | { type: 'status'; documentId: string; reviewId: string; status: ReviewStatus }
+  | { type: 'finding'; documentId: string; reviewId: string };
+
 export type StartReviewBody = {
   documentId: string;
   lawyerId: string;

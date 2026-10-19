@@ -19,6 +19,10 @@ export type FakeAiOptions = {
   failureRate: number;
   /** Total duration of a review, min and max in milliseconds. */
   durationMs: [min: number, max: number];
+  /** Share of reviews that are slow and take `slowDurationMs` instead of `durationMs`. */
+  slowRate: number;
+  /** Total duration of a slow review, min and max in milliseconds. */
+  slowDurationMs: [min: number, max: number];
 };
 
 export const DEFAULT_FAKE_AI_OPTIONS: FakeAiOptions = {
@@ -26,6 +30,8 @@ export const DEFAULT_FAKE_AI_OPTIONS: FakeAiOptions = {
   sleep,
   failureRate: 1 / 5,
   durationMs: [5_000, 30_000],
+  slowRate: 1 / 10,
+  slowDurationMs: [60_000, 120_000],
 };
 
 export class FakeAiFailedError extends Error {
@@ -39,10 +45,11 @@ export class FakeAiFailedError extends Error {
  * The fake AI from the brief. Its "answers" are the findings listed for the document in
  * samples/documents.json, returned one at a time at random moments spread over 5 to 30
  * seconds. About 1 time in 5 it fails with an error instead of finishing, after having
- * returned some of the findings or none.
+ * returned some of the findings or none. About 1 time in 10 it is slow and takes 60 to
+ * 120 seconds, which is longer than a review is allowed to run.
  *
  * Randomness is drawn in a fixed order so tests can script an outcome:
- * fails?, how many findings before failing, total duration, then one weight per step.
+ * fails?, how many findings before failing, slow?, total duration, then one weight per step.
  */
 @Injectable()
 export class FakeAiProvider implements AiProvider {
@@ -62,14 +69,15 @@ export class FakeAiProvider implements AiProvider {
       throw new Error(`Unknown document ${documentId}`);
     }
 
-    const { random, sleep, failureRate, durationMs } = this.options;
+    const { random, sleep, failureRate, durationMs, slowRate, slowDurationMs } = this.options;
 
     const fails = random() < failureRate;
     // On failure, stop after 0..n findings (n = all of them, failing right at the end).
     // The roll is always drawn so the order of random() calls is fixed.
     const failAfterRoll = random();
     const failAfter = fails ? Math.floor(failAfterRoll * (findings.length + 1)) : Infinity;
-    const [min, max] = durationMs;
+    const slow = random() < slowRate;
+    const [min, max] = slow ? slowDurationMs : durationMs;
     const totalMs = min + random() * (max - min);
 
     // n findings + the completion = n + 1 steps, at random intervals that add up to totalMs.

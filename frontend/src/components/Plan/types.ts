@@ -1,5 +1,5 @@
 export type Plan = {
-  id: string;
   max: number;
+  used: number;
   remaining: number;
 };
