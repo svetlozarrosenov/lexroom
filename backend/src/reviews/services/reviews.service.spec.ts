@@ -1,9 +1,12 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AI_PROVIDER } from '../../ai/interfaces/ai-provider.interface.js';
-import type { AiFinding, AiProvider } from '../../ai/interfaces/ai-provider.interface.js';
+import type {
+  AiFinding,
+  AiProvider,
+} from '../../ai/interfaces/ai-provider.interface.js';
 import { sleep } from '../../ai/providers/fake-ai.provider.js';
 import { Plan } from '../../plan/entities/plan.entity.js';
 import { PlanService } from '../../plan/services/plan.service.js';
@@ -13,20 +16,51 @@ import { Review } from '../entities/review.entity.js';
 import { ReviewStatus } from '../review-status.enum.js';
 import type { ReviewEvent } from '../review-event.js';
 import { ReviewEventsService } from './review-events.service.js';
-import { REVIEW_TIMEOUT_MS, ReviewsService } from './reviews.service.js';
+import {
+  REVIEW_TIMEOUT_MS,
+  ReviewsService,
+  startOfMonth,
+} from './reviews.service.js';
 
 const DOC_A = '639fb780-cfdf-4393-bf6e-6a330940b21e';
 const DOC_B = '125c8706-e702-4d6f-b2c5-80aeb110cd5c';
 const CHIARA = '7c1f3d2a-9b64-4e0f-8a21-5d3e6f7a8b90';
 const RICCARDO = 'e4a8b6c2-1d3f-4a5b-9c7e-2f8a9b0c1d2e';
 
+/** The two documents of the tests, seeded by `setup`; reviews have a foreign key to them. */
+const DOCUMENTS = [DOC_A, DOC_B].map((id) => ({
+  id,
+  title: 't',
+  type: 'nda',
+  pages: 1,
+  uploadedAt: 'x',
+  uploadedBy: 'l',
+  supersedes: null,
+  reviewRequestedAt: null,
+}));
+
 const FINDINGS: AiFinding[] = [
-  { clause: '5.1', title: 'Liability is not capped', severity: 'high', excerpt: 'x', explanation: 'a' },
-  { clause: null, title: 'No governing law', severity: 'low', excerpt: null, explanation: 'b' },
+  {
+    clause: '5.1',
+    title: 'Liability is not capped',
+    severity: 'high',
+    excerpt: 'x',
+    explanation: 'a',
+  },
+  {
+    clause: null,
+    title: 'No governing law',
+    severity: 'low',
+    excerpt: null,
+    explanation: 'b',
+  },
 ];
 
 /** AI stub: fixed findings per document, or a failure after some of them. */
-function aiStub(findingsByDoc: Record<string, AiFinding[]>, failAfter = Infinity): AiProvider {
+function aiStub(
+  findingsByDoc: Record<string, AiFinding[]>,
+  failAfter = Infinity,
+): AiProvider {
   return {
     async *review(documentId) {
       const findings = findingsByDoc[documentId] ?? [];
@@ -40,7 +74,10 @@ function aiStub(findingsByDoc: Record<string, AiFinding[]>, failAfter = Infinity
 }
 
 /** AI stub whose reviews all wait for `release()` before returning the same findings. */
-function gatedAi(findings: AiFinding[]): { ai: AiProvider; release: () => void } {
+function gatedAi(findings: AiFinding[]): {
+  ai: AiProvider;
+  release: () => void;
+} {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   return {
@@ -65,20 +102,28 @@ async function setup(ai: AiProvider) {
       }),
       TypeOrmModule.forFeature([Review, Finding, Plan, Document]),
     ],
-    providers: [ReviewsService, PlanService, ReviewEventsService, { provide: AI_PROVIDER, useValue: ai }],
+    providers: [
+      ReviewsService,
+      PlanService,
+      ReviewEventsService,
+      { provide: AI_PROVIDER, useValue: ai },
+    ],
   }).compile();
 
   const service = moduleRef.get(ReviewsService);
   const events = moduleRef.get(ReviewEventsService);
+  const documents = moduleRef.get<Repository<Document>>(
+    getRepositoryToken(Document),
+  );
+  await documents.insert(DOCUMENTS);
 
   return {
     service,
     events,
-    plan: moduleRef.get(PlanService),
     reviews: moduleRef.get<Repository<Review>>(getRepositoryToken(Review)),
     findings: moduleRef.get<Repository<Finding>>(getRepositoryToken(Finding)),
     plans: moduleRef.get<Repository<Plan>>(getRepositoryToken(Plan)),
-    documents: moduleRef.get<Repository<Document>>(getRepositoryToken(Document)),
+    documents,
     /** Starts a review and waits until it is completed or failed, as a client would. */
     async finish(documentId: string, lawyerId: string): Promise<Review> {
       const review = await service.start({ documentId, lawyerId });
@@ -89,10 +134,17 @@ async function setup(ai: AiProvider) {
 }
 
 /** Resolves with the first status other than "running" the bus reports for a review. */
-function ended(events: ReviewEventsService, reviewId: string): Promise<ReviewStatus> {
+function ended(
+  events: ReviewEventsService,
+  reviewId: string,
+): Promise<ReviewStatus> {
   return new Promise((resolve) => {
     const subscription = events.all().subscribe((event) => {
-      if (event.reviewId === reviewId && event.type === 'status' && event.status !== ReviewStatus.Running) {
+      if (
+        event.reviewId === reviewId &&
+        event.type === 'status' &&
+        event.status !== ReviewStatus.Running
+      ) {
         subscription.unsubscribe();
         resolve(event.status);
       }
@@ -121,7 +173,9 @@ describe('ReviewsService', () => {
 
     expect(review.status).toBe(ReviewStatus.Completed);
     expect(review.findings.map((f) => f.content)).toEqual(FINDINGS);
-    expect(await findings.countBy({ reviewId: review.id })).toBe(FINDINGS.length);
+    expect(await findings.countBy({ reviewId: review.id })).toBe(
+      FINDINGS.length,
+    );
   });
 
   it('stores no findings for a document the AI has nothing to say about', async () => {
@@ -135,82 +189,191 @@ describe('ReviewsService', () => {
   });
 
   it('each completed review uses one of the plan', async () => {
-    const { finish, plan } = await setup(aiStub({ [DOC_A]: FINDINGS }));
+    const { service, finish } = await setup(aiStub({ [DOC_A]: FINDINGS }));
 
     await finish(DOC_A, CHIARA);
     await finish(DOC_B, CHIARA);
 
-    expect(await plan.current()).toEqual({ max: 10, used: 2, remaining: 8 });
+    expect(await service.usedThisMonth()).toBe(2);
   });
 
   it('with one review left and two running, completes one and fails the other, keeping its findings', async () => {
     // The request-time check lets both through: the plan has one review left when each is
     // requested. The binding check is the one at completion.
     const { ai, release } = gatedAi(FINDINGS);
-    const { service, events, findings, plan, plans } = await setup(ai);
+    const { service, events, findings, plans } = await setup(ai);
     await plans.save(plans.create({ max: 1 }));
     const first = await service.start({ documentId: DOC_A, lawyerId: CHIARA });
-    const second = await service.start({ documentId: DOC_B, lawyerId: RICCARDO });
-    const endings = Promise.all([ended(events, first.id), ended(events, second.id)]);
+    const second = await service.start({
+      documentId: DOC_B,
+      lawyerId: RICCARDO,
+    });
+    const endings = Promise.all([
+      ended(events, first.id),
+      ended(events, second.id),
+    ]);
 
     release();
     const statuses = await endings;
 
-    expect([...statuses].sort()).toEqual([ReviewStatus.Completed, ReviewStatus.Failed]);
+    expect([...statuses].sort()).toEqual([
+      ReviewStatus.Completed,
+      ReviewStatus.Failed,
+    ]);
     const failed = statuses[0] === ReviewStatus.Failed ? first : second;
-    expect(await findings.countBy({ reviewId: failed.id })).toBe(FINDINGS.length);
-    expect(await plan.current()).toEqual({ max: 1, used: 1, remaining: 0 });
+    expect(await findings.countBy({ reviewId: failed.id })).toBe(
+      FINDINGS.length,
+    );
+    expect(await service.usedThisMonth()).toBe(1);
+  });
+
+  describe('plan usage', () => {
+    /** Inserts a review created `daysAgo` days ago with the given status. */
+    async function insert(
+      reviews: Repository<Review>,
+      status: ReviewStatus,
+      daysAgo = 0,
+    ) {
+      const { identifiers } = await reviews.insert({
+        documentId: DOC_A,
+        lawyerId: CHIARA,
+        status,
+      });
+      await reviews.update(identifiers[0].id, {
+        createdAt: new Date(Date.now() - daysAgo * 86_400_000),
+      });
+    }
+
+    it('starts with 10 reviews, none used', async () => {
+      const { service } = await setup(aiStub({}));
+      expect(await service.usedThisMonth()).toBe(0);
+    });
+
+    it('counts completed reviews of this month as used, not failed or running ones', async () => {
+      const { service, reviews } = await setup(aiStub({}));
+      await insert(reviews, ReviewStatus.Completed);
+      await insert(reviews, ReviewStatus.Completed);
+      await insert(reviews, ReviewStatus.Failed);
+      await insert(reviews, ReviewStatus.Running);
+
+      expect(await service.usedThisMonth()).toBe(2);
+    });
+
+    it('does not count reviews of previous months, so the allowance renews on the 1st', async () => {
+      const { service, reviews } = await setup(aiStub({}));
+      const daysIntoMonth =
+        (Date.now() - startOfMonth().getTime()) / 86_400_000;
+      await insert(reviews, ReviewStatus.Completed, daysIntoMonth + 1);
+      await insert(reviews, ReviewStatus.Completed, daysIntoMonth + 40);
+      await insert(reviews, ReviewStatus.Completed);
+
+      expect(await service.usedThisMonth()).toBe(1);
+    });
+
+    it('startOfMonth is the first instant of the month in UTC', () => {
+      expect(startOfMonth(new Date('2026-10-19T23:30:00Z')).toISOString()).toBe(
+        '2026-10-01T00:00:00.000Z',
+      );
+      expect(startOfMonth(new Date('2026-01-01T00:00:00Z')).toISOString()).toBe(
+        '2026-01-01T00:00:00.000Z',
+      );
+    });
   });
 
   it('refuses a request up front with 402 once the plan is used up, creating nothing and leaving a reminder', async () => {
     const { service, reviews, documents, plans } = await setup(aiStub({}));
     await plans.save(plans.create({ max: 0 }));
-    const doc = { id: DOC_A, title: 't', type: 'nda', pages: 1, uploadedAt: 'x', uploadedBy: 'l', supersedes: null };
-    await documents.insert({ ...doc, reviewRequestedAt: null });
 
-    await expect(service.start({ documentId: DOC_A, lawyerId: CHIARA })).rejects.toMatchObject({ status: 402 });
+    await expect(
+      service.start({ documentId: DOC_A, lawyerId: CHIARA }),
+    ).rejects.toMatchObject({ status: 402 });
 
     expect(await reviews.count()).toBe(0);
-    expect((await documents.findOneByOrFail({ id: DOC_A })).reviewRequestedAt).toBeInstanceOf(Date);
+    expect(
+      (await documents.findOneByOrFail({ id: DOC_A })).reviewRequestedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('refuses a review of an unknown document with 404, creating nothing', async () => {
+    const { service, reviews } = await setup(aiStub({}));
+
+    await expect(
+      service.start({ documentId: 'nope', lawyerId: CHIARA }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(await reviews.count()).toBe(0);
+  });
+
+  it('enforces the foreign key to documents in the database itself', async () => {
+    const { reviews } = await setup(aiStub({}));
+
+    await expect(
+      reviews.insert({
+        documentId: 'nope',
+        lawyerId: CHIARA,
+        status: ReviewStatus.Running,
+      }),
+    ).rejects.toThrow(/FOREIGN KEY constraint failed/);
   });
 
   it('on boot, marks reviews left running by a previous process as failed, freeing their documents', async () => {
     const { service, reviews } = await setup(aiStub({}));
-    await reviews.insert({ documentId: DOC_A, lawyerId: CHIARA, status: ReviewStatus.Running });
-    await reviews.insert({ documentId: DOC_B, lawyerId: CHIARA, status: ReviewStatus.Completed });
+    await reviews.insert({
+      documentId: DOC_A,
+      lawyerId: CHIARA,
+      status: ReviewStatus.Running,
+    });
+    await reviews.insert({
+      documentId: DOC_B,
+      lawyerId: CHIARA,
+      status: ReviewStatus.Completed,
+    });
 
     await service.onModuleInit();
 
-    expect((await reviews.findOneByOrFail({ documentId: DOC_A })).status).toBe(ReviewStatus.Failed);
-    expect((await reviews.findOneByOrFail({ documentId: DOC_B })).status).toBe(ReviewStatus.Completed);
+    expect((await reviews.findOneByOrFail({ documentId: DOC_A })).status).toBe(
+      ReviewStatus.Failed,
+    );
+    expect((await reviews.findOneByOrFail({ documentId: DOC_B })).status).toBe(
+      ReviewStatus.Completed,
+    );
     // The document is free again: a new review of it can be created.
-    expect((await service.start({ documentId: DOC_A, lawyerId: RICCARDO })).status).toBe(ReviewStatus.Running);
+    expect(
+      (await service.start({ documentId: DOC_A, lawyerId: RICCARDO })).status,
+    ).toBe(ReviewStatus.Running);
   });
 
   it('clears the "requested while the plan was used up" reminder when a review completes', async () => {
     // DOC_A fails after its first finding; DOC_B has none to fail on and completes.
     const { finish, documents } = await setup(aiStub({ [DOC_A]: FINDINGS }, 1));
     const requestedAt = new Date('2026-10-05T10:00:00Z');
-    const doc = { id: DOC_A, title: 't', type: 'nda', pages: 1, uploadedAt: 'x', uploadedBy: 'l', supersedes: null };
-    await documents.insert({ ...doc, reviewRequestedAt: requestedAt });
-    await documents.insert({ ...doc, id: DOC_B, reviewRequestedAt: requestedAt });
+    await documents.update(
+      { id: In([DOC_A, DOC_B]) },
+      { reviewRequestedAt: requestedAt },
+    );
 
     expect((await finish(DOC_A, CHIARA)).status).toBe(ReviewStatus.Failed);
-    expect((await documents.findOneByOrFail({ id: DOC_A })).reviewRequestedAt).toEqual(requestedAt);
+    expect(
+      (await documents.findOneByOrFail({ id: DOC_A })).reviewRequestedAt,
+    ).toEqual(requestedAt);
 
     expect((await finish(DOC_B, CHIARA)).status).toBe(ReviewStatus.Completed);
-    expect((await documents.findOneByOrFail({ id: DOC_B })).reviewRequestedAt).toBeNull();
+    expect(
+      (await documents.findOneByOrFail({ id: DOC_B })).reviewRequestedAt,
+    ).toBeNull();
   });
 
   it('marks the review failed when the AI fails midway, keeping the findings it had returned', async () => {
-    const { finish, findings, plan } = await setup(aiStub({ [DOC_A]: FINDINGS }, 1));
+    const { service, finish, findings } = await setup(
+      aiStub({ [DOC_A]: FINDINGS }, 1),
+    );
 
     const review = await finish(DOC_A, CHIARA);
 
     expect(review.status).toBe(ReviewStatus.Failed);
     expect(review.findings.map((f) => f.content)).toEqual([FINDINGS[0]]);
     expect(await findings.count()).toBe(1);
-    expect((await plan.current()).used).toBe(0);
+    expect(await service.usedThisMonth()).toBe(0);
   });
 
   it('frees the document for a retry after a failed review', async () => {
@@ -225,11 +388,15 @@ describe('ReviewsService', () => {
 
   it('rejects a second review while one is still running, even from another lawyer', async () => {
     const { service, reviews } = await setup(aiStub({ [DOC_A]: FINDINGS }));
-    await reviews.insert({ documentId: DOC_A, lawyerId: CHIARA, status: ReviewStatus.Running });
+    await reviews.insert({
+      documentId: DOC_A,
+      lawyerId: CHIARA,
+      status: ReviewStatus.Running,
+    });
 
-    await expect(service.start({ documentId: DOC_A, lawyerId: RICCARDO })).rejects.toBeInstanceOf(
-      ConflictException,
-    );
+    await expect(
+      service.start({ documentId: DOC_A, lawyerId: RICCARDO }),
+    ).rejects.toBeInstanceOf(ConflictException);
     expect(await reviews.count()).toBe(1);
   });
 
@@ -244,56 +411,40 @@ describe('ReviewsService', () => {
 
   it('enforces the one-running-review rule in the database itself', async () => {
     const { reviews } = await setup(aiStub({}));
-    await reviews.insert({ documentId: DOC_A, lawyerId: CHIARA, status: ReviewStatus.Running });
+    await reviews.insert({
+      documentId: DOC_A,
+      lawyerId: CHIARA,
+      status: ReviewStatus.Running,
+    });
 
     await expect(
-      reviews.insert({ documentId: DOC_A, lawyerId: RICCARDO, status: ReviewStatus.Running }),
+      reviews.insert({
+        documentId: DOC_A,
+        lawyerId: RICCARDO,
+        status: ReviewStatus.Running,
+      }),
     ).rejects.toThrow(/UNIQUE constraint failed/);
   });
 
   it('lists the reviews of one document with their findings, newest first', async () => {
-    const { service, finish, reviews } = await setup(aiStub({ [DOC_A]: FINDINGS, [DOC_B]: [FINDINGS[0]] }));
+    const { service, finish, reviews } = await setup(
+      aiStub({ [DOC_A]: FINDINGS, [DOC_B]: [FINDINGS[0]] }),
+    );
     const older = await finish(DOC_A, CHIARA);
     await finish(DOC_B, CHIARA);
     const newer = await finish(DOC_A, RICCARDO);
     // createdAt has second precision in SQLite; push the first review clearly into the past.
-    await reviews.update(older.id, { createdAt: new Date(Date.now() - 60_000) });
+    await reviews.update(older.id, {
+      createdAt: new Date(Date.now() - 60_000),
+    });
 
-    const listed = await service.findAll(DOC_A);
+    const listed = await service.findAllByDocumentId(DOC_A);
 
     expect(listed.map((r) => r.id)).toEqual([newer.id, older.id]);
-    expect(listed.every((r) => r.findings.length === FINDINGS.length)).toBe(true);
-    expect(await service.findAll()).toHaveLength(3);
-  });
-
-  it('finds the latest review of every document with its findings count, without the findings', async () => {
-    const { service, finish, reviews } = await setup(aiStub({ [DOC_A]: FINDINGS, [DOC_B]: [FINDINGS[0]] }));
-    const older = await finish(DOC_A, CHIARA);
-    const b = await finish(DOC_B, CHIARA);
-    const newer = await finish(DOC_A, RICCARDO);
-    await reviews.update(older.id, { createdAt: new Date(Date.now() - 60_000) });
-
-    const latest = await service.findLatestPerDocument();
-
-    expect(latest.map((r) => [r.documentId, r.id, r.findingsCount]).sort()).toEqual(
-      [
-        [DOC_A, newer.id, 2],
-        [DOC_B, b.id, 1],
-      ].sort(),
+    expect(listed.every((r) => r.findings.length === FINDINGS.length)).toBe(
+      true,
     );
-    // Class fields exist as own properties (set to undefined); the findings are not loaded.
-    expect(latest[0].findings).toBeUndefined();
-    expect(latest[0].createdAt).toBeInstanceOf(Date);
-    expect((await service.findLatestPerDocument(DOC_A)).map((r) => r.id)).toEqual([newer.id]);
-    expect(await service.findLatestPerDocument('nope')).toEqual([]);
-  });
-
-  it('breaks a same-second tie in favour of the review created last', async () => {
-    const { service, finish } = await setup(aiStub({}));
-    await finish(DOC_A, CHIARA);
-    const last = await finish(DOC_A, RICCARDO);
-
-    expect((await service.findLatestPerDocument(DOC_A)).map((r) => r.id)).toEqual([last.id]);
+    expect(await service.findAll()).toHaveLength(3);
   });
 
   it('emits running, one event per finding, then completed', async () => {
@@ -303,7 +454,12 @@ describe('ReviewsService', () => {
 
     const review = await finish(DOC_A, CHIARA);
 
-    expect(kinds(received)).toEqual(['running', 'finding', 'finding', 'completed']);
+    expect(kinds(received)).toEqual([
+      'running',
+      'finding',
+      'finding',
+      'completed',
+    ]);
     expect(received.every((e) => e.reviewId === review.id)).toBe(true);
   });
 
@@ -329,7 +485,9 @@ describe('ReviewsService', () => {
   });
 
   it('removeAll deletes every review and its findings', async () => {
-    const { service, finish, reviews, findings } = await setup(aiStub({ [DOC_A]: FINDINGS }));
+    const { service, finish, reviews, findings } = await setup(
+      aiStub({ [DOC_A]: FINDINGS }),
+    );
     await finish(DOC_A, CHIARA);
     await finish(DOC_B, CHIARA);
 
@@ -340,7 +498,9 @@ describe('ReviewsService', () => {
   });
 
   it('deletes the findings together with their review', async () => {
-    const { finish, reviews, findings } = await setup(aiStub({ [DOC_A]: FINDINGS }));
+    const { finish, reviews, findings } = await setup(
+      aiStub({ [DOC_A]: FINDINGS }),
+    );
     const review = await finish(DOC_A, CHIARA);
 
     await reviews.delete(review.id);
@@ -353,7 +513,10 @@ describe('ReviewsService', () => {
     afterEach(() => vi.useRealTimers());
 
     /** AI that returns one finding, then is slow; honours the abort signal like the fake does. */
-    function slowAi(slowMs: number, { honoursAbort = true } = {}): AiProvider & { aborted: boolean } {
+    function slowAi(
+      slowMs: number,
+      { honoursAbort = true } = {},
+    ): AiProvider & { aborted: boolean } {
       const ai = {
         aborted: false,
         async *review(_documentId: string, signal?: AbortSignal) {
@@ -369,11 +532,14 @@ describe('ReviewsService', () => {
 
     it('fails a review still running after 60 s, cuts the AI off and leaves the plan untouched', async () => {
       const ai = slowAi(100_000);
-      const { service, events, findings, plan } = await setup(ai);
+      const { service, events, findings } = await setup(ai);
       const received: ReviewEvent[] = [];
       events.forDocument(DOC_A).subscribe((e) => received.push(e));
 
-      const review = await service.start({ documentId: DOC_A, lawyerId: CHIARA });
+      const review = await service.start({
+        documentId: DOC_A,
+        lawyerId: CHIARA,
+      });
       const done = ended(events, review.id);
       await vi.advanceTimersByTimeAsync(REVIEW_TIMEOUT_MS);
 
@@ -381,7 +547,7 @@ describe('ReviewsService', () => {
       expect(ai.aborted).toBe(true);
       expect(kinds(received)).toEqual(['running', 'finding', 'failed']);
       expect(await findings.countBy({ reviewId: review.id })).toBe(1);
-      expect((await plan.current()).used).toBe(0);
+      expect(await service.usedThisMonth()).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
     });
 
@@ -389,7 +555,10 @@ describe('ReviewsService', () => {
       const ai = slowAi(100_000, { honoursAbort: false });
       const { service, events, findings } = await setup(ai);
 
-      const review = await service.start({ documentId: DOC_A, lawyerId: CHIARA });
+      const review = await service.start({
+        documentId: DOC_A,
+        lawyerId: CHIARA,
+      });
       const done = ended(events, review.id);
       await vi.advanceTimersByTimeAsync(100_000);
 
@@ -404,29 +573,37 @@ describe('ReviewsService', () => {
           yield* [];
         },
       };
-      const { service, events, reviews, plan } = await setup(ai);
+      const { service, events, reviews } = await setup(ai);
 
-      const review = await service.start({ documentId: DOC_A, lawyerId: CHIARA });
+      const review = await service.start({
+        documentId: DOC_A,
+        lawyerId: CHIARA,
+      });
       const done = ended(events, review.id);
       await vi.advanceTimersByTimeAsync(70_000);
 
       expect(await done).toBe(ReviewStatus.Failed);
-      expect((await reviews.findOneByOrFail({ id: review.id })).status).toBe(ReviewStatus.Failed);
-      expect((await plan.current()).used).toBe(0);
+      expect((await reviews.findOneByOrFail({ id: review.id })).status).toBe(
+        ReviewStatus.Failed,
+      );
+      expect(await service.usedThisMonth()).toBe(0);
     });
 
     it('completes a review that finishes in time and clears its timer', async () => {
       const ai = slowAi(20_000);
-      const { service, events, plan } = await setup(ai);
+      const { service, events } = await setup(ai);
 
-      const review = await service.start({ documentId: DOC_A, lawyerId: CHIARA });
+      const review = await service.start({
+        documentId: DOC_A,
+        lawyerId: CHIARA,
+      });
       const done = ended(events, review.id);
       await vi.advanceTimersByTimeAsync(20_000);
 
       expect(await done).toBe(ReviewStatus.Completed);
       expect(ai.aborted).toBe(false);
       expect(vi.getTimerCount()).toBe(0);
-      expect((await plan.current()).remaining).toBe(9);
+      expect(await service.usedThisMonth()).toBe(1);
     });
   });
 });

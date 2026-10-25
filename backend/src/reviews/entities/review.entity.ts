@@ -1,5 +1,17 @@
-import { Column, CreateDateColumn, Entity, Index, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+  PrimaryGeneratedColumn,
+  VirtualColumn,
+} from 'typeorm';
+import type { Relation } from 'typeorm';
 import { ReviewStatus } from '../review-status.enum.js';
+import { Document } from '../../documents/entities/document.entity.js';
 import { Finding } from '../../findings/entities/finding.entity.js';
 
 /**
@@ -26,9 +38,13 @@ export class Review {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  /** Document from samples/documents.json */
+  /** Document from samples/documents.json; a foreign key, so a review of an unknown document cannot be created. */
   @Column({ type: 'text' })
   documentId: string;
+
+  @ManyToOne(() => Document, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'documentId' })
+  document: Relation<Document>;
 
   /** Lawyer from samples/lawyers.json who requested the review */
   @Column({ type: 'text' })
@@ -41,5 +57,13 @@ export class Review {
   createdAt: Date;
 
   @OneToMany(() => Finding, (finding) => finding.review)
-  findings: Finding[];
+  findings: Relation<Finding[]>;
+
+  /** Number of findings, counted by the database on every select, without loading them. */
+  @VirtualColumn({
+    type: 'integer',
+    query: (alias) =>
+      `SELECT COUNT(*) FROM findings WHERE "reviewId" = ${alias}.id`,
+  })
+  findingsCount: number;
 }

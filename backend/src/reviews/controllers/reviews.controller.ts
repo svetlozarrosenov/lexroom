@@ -26,8 +26,13 @@ export class ReviewsController {
   ) {}
 
   @Get()
-  findAll(@Query('documentId') documentId?: string) {
-    return this.reviewsService.findAll(documentId);
+  findAll() {
+    return this.reviewsService.findAll();
+  }
+
+  @Get('document/:documentId')
+  findAllByDocumentId(@Param('documentId') documentId: string) {
+    return this.reviewsService.findAllByDocumentId(documentId);
   }
 
   /**
@@ -36,11 +41,19 @@ export class ReviewsController {
    */
   @Sse('events')
   events(@Query('documentId') documentId?: string): Observable<MessageEvent> {
-    const events = documentId ? this.reviewEvents.forDocument(documentId) : this.reviewEvents.all();
+    const events = documentId
+      ? this.reviewEvents.forDocument(documentId)
+      : this.reviewEvents.all();
     return events.pipe(map((event) => ({ data: event })));
   }
 
-  /** Declared after the SSE route so that "events" is never read as an id. */
+  /** Completed reviews counted against the plan this month. */
+  @Get('used')
+  used() {
+    return this.reviewsService.usedThisMonth();
+  }
+
+  /** Declared after the "events", "used" and "document/…" routes so that none is read as an id. */
   @Get(':id')
   async findOne(@Param('id') id: string) {
     const review = await this.reviewsService.findOne(id);

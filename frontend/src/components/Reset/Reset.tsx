@@ -1,6 +1,8 @@
 import { useNavigate } from 'react-router';
 import ErrorBanner from '../ErrorBanner/ErrorBanner';
 import { useRemoveAllFindings, useRemoveAllReviews } from './hooks';
+import { URLs } from '../../pages/Documents/hooks';
+import {mutate} from 'swr'
 
 export default function Reset() {
   const navigate = useNavigate();
@@ -18,6 +20,7 @@ export default function Reset() {
     try {
       await findings.removeAllFindings();
       await reviews.removeAllReviews();
+      mutate(URLs.getDocuments);
       navigate('/');
     } catch {
       // the failing hook exposes its error, rendered below

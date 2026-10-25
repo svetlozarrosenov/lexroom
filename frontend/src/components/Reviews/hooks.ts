@@ -2,17 +2,24 @@ import { useEffect } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import useSWRMutation from 'swr/mutation';
 import { ApiError, fetcher, postJson } from '../../lib/fetcher';
-import { usePlan } from '../Plan/hooks';
 import type { Review, ReviewEvent, StartReviewBody } from './types';
 
 const URLs = {
-  getReviewsByDocument: (documentId: string) => `/api/reviews?documentId=${documentId}`,
+  getReviewsByDocument: (documentId: string) => `/api/reviews/document/${documentId}`,
   getReview: (id: string) => `/api/reviews/${id}`,
+  /** Completed reviews this month, counted against the plan. */
+  getUsed: '/api/reviews/used',
   reviewEvents: (documentId: string) => `/api/reviews/events?documentId=${documentId}`,
   startReview: '/api/reviews',
   /** Refreshed after a 402: the backend marks the document as "requested, run it next month". */
   getDocument: (documentId: string) => `/api/documents/${documentId}`,
 };
+
+/** How many of the plan's reviews this month have been used: the completed ones. */
+export function useUsed() {
+  const { data, error, isLoading, mutate } = useSWR<number>(URLs.getUsed);
+  return { used: data, error, isLoading, refresh: mutate };
+}
 
 export function useReviews(documentId: string) {
   const { data, error, isLoading, mutate } = useSWR<Review[]>(URLs.getReviewsByDocument(documentId));
@@ -34,7 +41,7 @@ function upsertReview(reviews: Review[] | undefined, review: Review): Review[] {
  */
 export function useReviewEvents(documentId: string) {
   const { mutate } = useSWRConfig();
-  const { refresh: refreshPlan } = usePlan();
+  const { refresh: refreshUsed } = useUsed();
 
   useEffect(() => {
     const source = new EventSource(URLs.reviewEvents(documentId));
@@ -51,11 +58,11 @@ export function useReviewEvents(documentId: string) {
       const review = await fetcher<Review>(URLs.getReview(event.reviewId));
       await mutate<Review[]>(listKey, (reviews) => upsertReview(reviews, review), { revalidate: false });
       // Only a completed review counts against the plan.
-      if (event.type === 'status' && event.status === 'completed') void refreshPlan();
+      if (event.type === 'status' && event.status === 'completed') void refreshUsed();
     };
 
     return () => source.close();
-  }, [documentId, mutate, refreshPlan]);
+  }, [documentId, mutate, refreshUsed]);
 }
 
 export function useStartReview() {

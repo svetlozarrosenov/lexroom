@@ -1,12 +1,24 @@
-import { ConflictException, HttpException, HttpStatus, Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { MoreThanOrEqual, QueryFailedError, Repository } from 'typeorm';
 import { AI_PROVIDER } from '../../ai/interfaces/ai-provider.interface.js';
 import type { AiProvider } from '../../ai/interfaces/ai-provider.interface.js';
 import { PlanService } from '../../plan/services/plan.service.js';
 import { Document } from '../../documents/entities/document.entity.js';
 import { Finding } from '../../findings/entities/finding.entity.js';
-import { ONE_RUNNING_REVIEW_PER_DOCUMENT, Review } from '../entities/review.entity.js';
+import {
+  ONE_RUNNING_REVIEW_PER_DOCUMENT,
+  Review,
+} from '../entities/review.entity.js';
 import { ReviewStatus } from '../review-status.enum.js';
 import { ReviewEventsService } from './review-events.service.js';
 import type { CreateReviewDto } from '../dto/create-review.dto.js';
@@ -14,8 +26,10 @@ import type { CreateReviewDto } from '../dto/create-review.dto.js';
 /** The brief: a review still running 60 s after it was requested has failed, permanently. */
 export const REVIEW_TIMEOUT_MS = 60_000;
 
-/** A review with the number of its findings instead of the findings themselves. */
-export type ReviewWithFindingsCount = Review & { findingsCount: number };
+/** First instant of the calendar month `now` falls in, in UTC. */
+export function startOfMonth(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
 
 @Injectable()
 export class ReviewsService implements OnModuleInit {
@@ -40,48 +54,51 @@ export class ReviewsService implements OnModuleInit {
    * Marking it failed on boot also frees its document, which the running row was blocking.
    */
   async onModuleInit(): Promise<void> {
-    const { affected } = await this.reviews.update({ status: ReviewStatus.Running }, { status: ReviewStatus.Failed });
-    if (affected) this.logger.warn(`${affected} review(s) left running by a previous process marked failed`);
+    const { affected } = await this.reviews.update(
+      { status: ReviewStatus.Running },
+      { status: ReviewStatus.Failed },
+    );
+    if (affected)
+      this.logger.warn(
+        `${affected} review(s) left running by a previous process marked failed`,
+      );
   }
 
-  /** Reviews with their findings, newest first, optionally only those of one document. */
-  findAll(documentId?: string): Promise<Review[]> {
+  /** Every review in the workspace with its findings, newest first. */
+  findAll(): Promise<Review[]> {
     return this.reviews.find({
-      where: documentId ? { documentId } : {},
       relations: { findings: true },
       order: { createdAt: 'DESC' },
     });
   }
 
-  /**
-   * The latest review of every document, or of one document, each with its number of
-   * findings but without loading them. One query, fully served by indexes: the distinct
-   * documents come from the (documentId, createdAt) index, the newest review of each from
-   * a search of the same index, and the count of each from the findings' reviewId index.
-   * Same-second ties (createdAt has second precision) go to the later insert.
-   */
-  async findLatestPerDocument(documentId?: string): Promise<ReviewWithFindingsCount[]> {
-    const latestIds = `
-      SELECT (
-        SELECT id FROM reviews WHERE "documentId" = d."documentId" ORDER BY "createdAt" DESC, rowid DESC LIMIT 1
-      ) FROM (SELECT DISTINCT "documentId" FROM reviews ${documentId ? 'WHERE "documentId" = :documentId' : ''}) d`;
-
-    const { entities, raw } = await this.reviews
-      .createQueryBuilder('review')
-      .addSelect(
-        (qb) => qb.subQuery().select('COUNT(*)').from(Finding, 'finding').where('finding.reviewId = review.id'),
-        'findingsCount',
-      )
-      .where(`review.id IN (${latestIds})`, { documentId })
-      .getRawAndEntities<{ review_id: string; findingsCount: number }>();
-
-    const counts = new Map(raw.map((row) => [row.review_id, Number(row.findingsCount)]));
-    return entities.map((review) => Object.assign(review, { findingsCount: counts.get(review.id) ?? 0 }));
+  /** The reviews of one document with their findings, newest first. */
+  findAllByDocumentId(documentId: string): Promise<Review[]> {
+    return this.reviews.find({
+      where: { documentId },
+      relations: { findings: true },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   /** One review with its findings, or null if unknown. */
   findOne(id: string): Promise<Review | null> {
-    return this.reviews.findOne({ where: { id }, relations: { findings: true } });
+    return this.reviews.findOne({
+      where: { id },
+      relations: { findings: true },
+    });
+  }
+
+  /**
+   * Reviews counted against the plan this month: the completed ones created since the 1st
+   * (UTC). Failed ones never count, a running one not until it completes. Nothing is stored,
+   * so the allowance renews itself on the 1st without any scheduled job.
+   */
+  usedThisMonth(): Promise<number> {
+    return this.reviews.countBy({
+      status: ReviewStatus.Completed,
+      createdAt: MoreThanOrEqual(startOfMonth()),
+    });
   }
 
   /** Deletes every review and, through the cascade, every finding. */
@@ -99,12 +116,19 @@ export class ReviewsService implements OnModuleInit {
    * - otherwise the review is created as "running" (the partial unique index rejects a
    *   second running review of the same document: 409) and returned at once. The work
    *   itself continues in the background, see `run`; clients follow it through the events
-   *   stream.
+   *   stream;
+   * - an unknown document is refused by the foreign key: 404.
    */
   async start(dto: CreateReviewDto): Promise<Review> {
-    if (!(await this.plan.hasAllowance())) {
-      await this.documents.update({ id: dto.documentId }, { reviewRequestedAt: new Date() });
-      throw new HttpException('No reviews left in the plan this month', HttpStatus.PAYMENT_REQUIRED);
+    if ((await this.usedThisMonth()) >= (await this.plan.max())) {
+      await this.documents.update(
+        { id: dto.documentId },
+        { reviewRequestedAt: new Date() },
+      );
+      throw new HttpException(
+        'No reviews left in the plan this month',
+        HttpStatus.PAYMENT_REQUIRED,
+      );
     }
 
     const review = await this.createRunning(dto);
@@ -130,15 +154,23 @@ export class ReviewsService implements OnModuleInit {
   private async run(review: Review): Promise<void> {
     const { id: reviewId, documentId } = review;
     const controller = new AbortController();
-    const timeLeft = Math.max(0, review.createdAt.getTime() + REVIEW_TIMEOUT_MS - Date.now());
+    const timeLeft = Math.max(
+      0,
+      review.createdAt.getTime() + REVIEW_TIMEOUT_MS - Date.now(),
+    );
     const timer = setTimeout(() => {
       this.timeOut(review, controller).catch((error: unknown) => {
-        this.logger.error(`Review ${reviewId} could not be timed out: ${String(error)}`);
+        this.logger.error(
+          `Review ${reviewId} could not be timed out: ${String(error)}`,
+        );
       });
     }, timeLeft);
 
     try {
-      for await (const content of this.ai.review(documentId, controller.signal)) {
+      for await (const content of this.ai.review(
+        documentId,
+        controller.signal,
+      )) {
         // A finding that arrives after the timeout belongs to a review that already failed.
         if (controller.signal.aborted) break;
         await this.findings.save(this.findings.create({ reviewId, content }));
@@ -157,22 +189,49 @@ export class ReviewsService implements OnModuleInit {
   }
 
   /**
-   * Marks the review "completed" if the plan still allows it this month (one atomic
-   * statement, see PlanService.completeWithinPlan). When nothing was updated, either the
-   * timeout got there first (the row is no longer running: the completion is dropped) or
-   * the plan is used up (the row is still running: the review fails).
+   * Marks the review "completed" if the plan still has room this month, in ONE statement:
+   * the UPDATE's condition counts this month's completed reviews itself. SQLite runs a
+   * statement atomically, so two reviews finishing at the same time cannot both take the
+   * last slot, and no transaction is needed (with one connection, two overlapping
+   * transactions would interleave). When nothing was updated, either the timeout got there
+   * first (the row is no longer running: the completion is dropped) or the plan is used up
+   * (the row is still running: the review fails).
    */
   private async complete(review: Review): Promise<void> {
-    if (await this.plan.completeWithinPlan(review.id)) {
+    const max = await this.plan.max();
+    const { affected } = await this.reviews
+      .createQueryBuilder()
+      .update()
+      .set({ status: ReviewStatus.Completed })
+      .where('id = :id AND status = :running', {
+        id: review.id,
+        running: ReviewStatus.Running,
+      })
+      .andWhere(
+        '(SELECT COUNT(*) FROM reviews WHERE status = :completed AND "createdAt" >= :since) < :max',
+        {
+          completed: ReviewStatus.Completed,
+          since: startOfMonth(),
+          max,
+        },
+      )
+      .execute();
+
+    if (affected) {
       // A completed review settles any "run it next month" reminder left on the document.
-      await this.documents.update({ id: review.documentId }, { reviewRequestedAt: null });
+      await this.documents.update(
+        { id: review.documentId },
+        { reviewRequestedAt: null },
+      );
       this.emitStatus(review, ReviewStatus.Completed);
       return;
     }
 
     const current = await this.reviews.findOneBy({ id: review.id });
     if (current?.status === ReviewStatus.Running) {
-      this.logger.warn(`Review ${review.id} failed: no reviews left in the plan`);
+      this.logger.warn(
+        `Review ${review.id} failed: no reviews left in the plan`,
+      );
       await this.fail(review);
     }
   }
@@ -182,7 +241,10 @@ export class ReviewsService implements OnModuleInit {
    * closes its connection to the model, the fake clears the timer it was sleeping on.
    * Then the review is marked "failed", which never counts against the plan.
    */
-  private async timeOut(review: Review, controller: AbortController): Promise<void> {
+  private async timeOut(
+    review: Review,
+    controller: AbortController,
+  ): Promise<void> {
     controller.abort();
     await this.fail(review);
   }
@@ -197,13 +259,19 @@ export class ReviewsService implements OnModuleInit {
   }
 
   private emitStatus(review: Review, status: ReviewStatus): void {
-    this.events.emit({ type: 'status', documentId: review.documentId, reviewId: review.id, status });
+    this.events.emit({
+      type: 'status',
+      documentId: review.documentId,
+      reviewId: review.id,
+      status,
+    });
   }
 
   /**
    * The "one running review per document" rule is not checked with a SELECT first: that
    * would race between two lawyers clicking at the same time. We INSERT and let the
-   * partial unique index decide.
+   * partial unique index decide. The foreign key on documentId rejects unknown documents
+   * the same way.
    */
   private async createRunning(dto: CreateReviewDto): Promise<Review> {
     try {
@@ -216,7 +284,12 @@ export class ReviewsService implements OnModuleInit {
       );
     } catch (error) {
       if (isRunningReviewConflict(error)) {
-        throw new ConflictException('A review of this document is already in progress');
+        throw new ConflictException(
+          'A review of this document is already in progress',
+        );
+      }
+      if (isUnknownDocument(error)) {
+        throw new NotFoundException(`Unknown document ${dto.documentId}`);
       }
       throw error;
     }
@@ -228,6 +301,14 @@ function isRunningReviewConflict(error: unknown): boolean {
     error instanceof QueryFailedError &&
     /UNIQUE constraint failed/i.test(error.message) &&
     // SQLite names the index in the message only for some versions; the column is always there.
-    (error.message.includes(ONE_RUNNING_REVIEW_PER_DOCUMENT) || error.message.includes('documentId'))
+    (error.message.includes(ONE_RUNNING_REVIEW_PER_DOCUMENT) ||
+      error.message.includes('documentId'))
+  );
+}
+
+function isUnknownDocument(error: unknown): boolean {
+  return (
+    error instanceof QueryFailedError &&
+    /FOREIGN KEY constraint failed/i.test(error.message)
   );
 }

@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryColumn } from 'typeorm';
+import type { Review } from '../../reviews/entities/review.entity.js';
 
 /** A document of the workspace, seeded from samples/documents.json. */
 @Entity('documents')
@@ -34,4 +35,10 @@ export class Document {
    */
   @Column({ type: 'datetime', nullable: true })
   reviewRequestedAt: Date | null;
+
+  /**
+   * The newest review of this document, or null. Not a column: DocumentsService joins it
+   * (reviews.documentId is a foreign key to this table) in the same query as the document.
+   */
+  latestReview: Review | null;
 }

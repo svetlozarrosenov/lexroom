@@ -1,10 +1,10 @@
 import { useEffect } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { fetcher } from '../../lib/fetcher';
-import { usePlan } from '../../components/Plan/hooks';
+import { useUsed } from '../../components/Reviews';
 import type { Document, ReviewEvent } from './types';
 
-const URLs = {
+export const URLs = {
   getDocuments: '/api/documents',
   getDocument: (id: string) => `/api/documents/${id}`,
   reviewEvents: '/api/reviews/events',
@@ -22,7 +22,7 @@ export function useDocuments() {
  */
 export function useDocumentEvents() {
   const { mutate } = useSWRConfig();
-  const { refresh: refreshPlan } = usePlan();
+  const { refresh: refreshUsed } = useUsed();
 
   useEffect(() => {
     const source = new EventSource(URLs.reviewEvents);
@@ -42,9 +42,9 @@ export function useDocumentEvents() {
         { revalidate: false },
       );
       // Only a completed review counts against the plan.
-      if (event.type === 'status' && event.status === 'completed') void refreshPlan();
+      if (event.type === 'status' && event.status === 'completed') void refreshUsed();
     };
 
     return () => source.close();
-  }, [mutate, refreshPlan]);
+  }, [mutate, refreshUsed]);
 }

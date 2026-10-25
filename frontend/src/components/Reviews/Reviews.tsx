@@ -4,8 +4,7 @@ import Findings from '../Findings/Findings';
 import ReviewButton from '../ReviewButton/ReviewButton';
 import ReviewStatusBadge from '../ReviewStatusBadge/ReviewStatusBadge';
 import lawyers from '../../data/lawyers.json';
-import { usePlan } from '../Plan/hooks';
-import { useReviewEvents, useReviews, useStartReview } from './hooks';
+import { useReviewEvents, useReviews, useStartReview, useUsed } from './hooks';
 import type { Review, ReviewStatus, ReviewsProps } from './types';
 
 const dateFormat = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'medium' });
@@ -57,7 +56,7 @@ function ReviewSummary({ review }: { review: Review }) {
 
 export default function Reviews({ documentId, lawyerId }: ReviewsProps) {
   const { reviews, isLoading, error: loadError } = useReviews(documentId);
-  const { refresh: refreshPlan } = usePlan();
+  const { refresh: refreshUsed } = useUsed();
   const { startReview, isStarting, error: startError } = useStartReview();
   useReviewEvents(documentId);
 
@@ -72,7 +71,7 @@ export default function Reviews({ documentId, lawyerId }: ReviewsProps) {
       // error is exposed by the hook and rendered below
     } finally {
       // A failed review also shows up in the list, and the plan may have changed either way.
-      await refreshPlan();
+      await refreshUsed();
     }
   }
 

@@ -10,7 +10,12 @@ import { ReviewEventsService } from './services/review-events.service.js';
 import { ReviewsService } from './services/reviews.service.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Review, Document]), AiModule, PlanModule, FindingsModule],
+  imports: [
+    TypeOrmModule.forFeature([Review, Document]),
+    AiModule,
+    PlanModule,
+    FindingsModule,
+  ],
   controllers: [ReviewsController],
   providers: [ReviewsService, ReviewEventsService],
   exports: [ReviewsService],

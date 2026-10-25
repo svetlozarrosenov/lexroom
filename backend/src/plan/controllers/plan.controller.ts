@@ -5,8 +5,9 @@ import { PlanService } from '../services/plan.service.js';
 export class PlanController {
   constructor(private readonly planService: PlanService) {}
 
+  /** `{ max }`: the monthly allowance. What is used comes from GET /reviews/used. */
   @Get()
-  current() {
-    return this.planService.current();
+  async current() {
+    return { max: await this.planService.max() };
   }
 }
